@@ -1,0 +1,76 @@
+# Apenas para deploy (cria e/ou atualiza a imagem)
+name: CRIA A IMAGEM E ATUALIZA A TAG
+on:
+    push:
+        branches:
+            - main
+
+# Configurações da AWS
+permissions:
+  id-token: write
+  deployments: write
+  contents: write
+  statuses: write
+  actions: write
+  checks: read
+        
+jobs:
+    Build:
+      name: Build
+      runs-on: ubuntu-latest # SO
+      
+# Validação manual se Repo AWS (ECR) existe (pode ou não ser criado uma única vez com a Infra)    
+      env:
+          ECR_REGISTRY: "535002861869.dkr.ecr.us-east-1.amazonaws.com" #${{ secrets.URL_AWS }}
+          ECR_REPOSITORY: "dvps" #${{ secrets.REPO_NAME }}
+          
+      steps:
+        - name: Checkout
+          uses: actions/checkout@v4
+
+# Clonar Repo Git no ambiente de execução da pipe.
+        
+        - name: Set IMAGE_TAG with current timestamp
+          id: set_image_tag
+          run: echo "IMAGE_TAG=$(date +%Y%m%d%H%M%S)" >> $GITHUB_ENV
+          
+        - name: Configure AWS credentials
+          uses: aws-actions/configure-aws-credentials@v4 #uses: aws-actions/configure-aws-credentials@v1
+          with:
+            role-to-assume:  "arn:aws:iam::535002861869:role/github-mozart-devops-pipe"
+            aws-region: "us-east-1"
+                  
+        - name: Login to Amazon ECR
+          id: login-ecr
+          uses: aws-actions/amazon-ecr-login@v1
+
+# Não será criado via IaC Terraform
+        - name: Create ECR repository if it doesn't exist
+          run: |
+            aws ecr describe-repositories --repository-names $ECR_REPOSITORY || \
+            aws ecr create-repository --repository-name $ECR_REPOSITORY
+
+# Construção da Imagem
+        - name: Push to Amazon ECR
+          run: |
+            docker build -t $ECR_REPOSITORY:${{ env.IMAGE_TAG }} .
+            docker tag $ECR_REPOSITORY:${{ env.IMAGE_TAG }} $ECR_REGISTRY/$ECR_REPOSITORY:${{ env.IMAGE_TAG }}
+            docker push $ECR_REGISTRY/$ECR_REPOSITORY:${{ env.IMAGE_TAG }}
+
+# Repo em sync com o Argo, Argo faz o rollout e sobe os Pods com a nova versão da imagem
+        - name: Update Kubernetes deployment manifest
+          run: |
+            grep -q "image: $ECR_REGISTRY/$ECR_REPOSITORY" app_values/app.yaml \
+            && sed -i "s|image: $ECR_REGISTRY/$ECR_REPOSITORY:.*|image: $ECR_REGISTRY/$ECR_REPOSITORY:${{ env.IMAGE_TAG }}|" app_values/app.yaml \
+            || echo "image: $ECR_REGISTRY/$ECR_REPOSITORY:${{ env.IMAGE_TAG }}" >> app_values/app.yaml
+
+# Comitando e enviando a imagem para o repositório
+        - name: Commit and push changes
+          run: |
+            git config user.email "mozartrosa@hotmail.com"
+            git config user.name "mozartrosa"
+            git remote set-url origin https://oauth2:$ACCESS_TOKEN@github.com/mozart.rosa/appeks
+            git add .
+            git commit -m "Construção da Imagem com sucesso [skip ci]"
+            git push
+

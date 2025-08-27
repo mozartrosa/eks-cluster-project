@@ -1,0 +1,21 @@
+# Re validar ...
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+ name: python
+ namespace: app
+spec:
+ project: default
+ source:
+   repoURL: https://github.com/mozart-devops/appeks
+   targetRevision: main
+   path: app_values
+ destination:
+   server: https://kubernetes.default.svc
+   namespace: default
+ syncPolicy:
+   automated:
+     prune: true
+     selfHeal: true
+   syncOptions:
+   - CreateNamespace=true
